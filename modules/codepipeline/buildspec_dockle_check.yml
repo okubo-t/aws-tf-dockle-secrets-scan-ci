@@ -1,0 +1,53 @@
+version: 0.2
+
+env:
+  variables:
+    DOCKER_BUILDKIT: "1"
+
+phases:
+  install:
+    runtime-versions:
+      docker: 19
+    commands:
+      - echo Dockle Install...
+      #- DOCKLE_VERSION=0.4.5
+      - |
+        DOCKLE_VERSION=$(
+        curl --silent "https://api.github.com/repos/goodwithtech/dockle/releases/latest" | \
+        grep '"tag_name":' | \
+        sed -E 's/.*"v([^"]+)".*/\1/' \
+        )
+      - rpm -ivh https://github.com/goodwithtech/dockle/releases/download/v${DOCKLE_VERSION}/dockle_${DOCKLE_VERSION}_Linux-64bit.rpm
+      - echo Install completed on `date`
+      - dockle --version
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws --version
+      - echo $AWS_DEFAULT_REGION
+      - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+      - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - docker build -t ${REPOSITORY_URI}:${IMAGE_TAG} .
+      - echo Build completed on `date`
+      - echo Dockle Scan started on `date`
+      - dockle --format json -o results.json --exit-code 1 --exit-level "FATAL" ${REPOSITORY_URI}:${IMAGE_TAG}
+
+  post_build:
+    commands:
+      - echo Dockle Scan completed on `date`
+      - cat results.json
+      - |
+        if [ $CODEBUILD_BUILD_SUCCEEDING == "1" ]; then
+          docker push ${REPOSITORY_URI}:${IMAGE_TAG} ;
+          printf "[{\"name\":\"${IMAGE_REPO_NAME}\",\"imageUri\":\"%s\"}]" $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json ;
+          echo Build stage successfully completed on `date`
+        fi
+artifacts:
+  files:
+    - imagedefinitions.json
+    - results.json
